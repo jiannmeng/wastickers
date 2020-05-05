@@ -4,6 +4,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Collection, Union
+import string
 
 import requests
 from PIL import Image
@@ -47,11 +48,27 @@ def _recursive_remove(path: PathType, inner=False) -> None:
             path.rmdir()
 
 
-def _to_snake_case(text: str) -> str:
-    """Turns a string into snake case.
+# def _to_snake_case(text: str) -> str:
+#     """Turns a string into snake case.
 
-    Lower case the string, then replace spaces and dashes with underscores."""
-    return text.lower().replace(" ", "_").replace("-", "_")
+#     Lower case the string, then replace spaces and dashes with underscores."""
+#     return text.lower().replace(" ", "_").replace("-", "_")
+
+
+def _is_snake_char(char: str) -> bool:
+    assert len(char) == 1 and isinstance(char, str)
+    return char.isdigit() or (char in string.ascii_letters) or (char in "_ .-\n")
+
+
+def _to_snake_case(text: str) -> str:
+    text = "".join(filter(_is_snake_char, text))
+    text = text.lower()
+    text = text.replace(" ", "_").replace(".", "_").replace("-", "_").replace("\n", "_")
+    while "__" in text:
+        text = text.replace("__", "_")
+    if text[-1] == "_":
+        text = text[:-1]
+    return text
 
 
 def download(url: str, dl_folder: PathType) -> None:
@@ -148,12 +165,14 @@ def make_pack(
     pack_path.rename(pack_path.parent / output / f"{pack_path.stem}.wastickers")
 
 
-def scrape(title: str, author: str, url: str) -> None:
+def scrape(
+    title: str, author: str, url: str, tray_names: Collection[str] = None
+) -> None:
     """Scrape a given `url` into a .wastickers file with the given metadata."""
     pack_name = _to_snake_case(title)
     dest_folder = downloads / pack_name
     download(url, dest_folder)
-    pack_info = preprocess(dest_folder, title, author)
+    pack_info = preprocess(dest_folder, title, author, tray_names)
     for p in pack_info:
         make_pack(**p)
 
