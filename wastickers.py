@@ -2,14 +2,35 @@ import math
 import mimetypes
 import re
 import shutil
-from pathlib import Path
-from typing import Collection, Union
 import string
+from pathlib import Path
+from typing import Collection, NamedTuple, List, Union
 
 import requests
+from bs4 import BeautifulSoup
 from PIL import Image
 
 PathType = Union[str, Path]
+
+
+class Metadata(NamedTuple):
+    """Hold data from scraping store website."""
+
+    title: str
+    author: str
+    image_urls: List[str]
+
+
+class PackInfo(NamedTuple):
+    """Hold data for creation of .wastickers pack."""
+
+    title: str
+    author: str
+    image_paths: List[PathType]
+    tray_path: PathType
+
+
+# Commonly used paths.
 cwd = Path.cwd()  # Current working directory
 downloads = cwd / "downloads"
 output = cwd / "output"
@@ -48,13 +69,6 @@ def _recursive_remove(path: PathType, inner=False) -> None:
             path.rmdir()
 
 
-# def _to_snake_case(text: str) -> str:
-#     """Turns a string into snake case.
-
-#     Lower case the string, then replace spaces and dashes with underscores."""
-#     return text.lower().replace(" ", "_").replace("-", "_")
-
-
 def _is_snake_char(char: str) -> bool:
     assert len(char) == 1 and isinstance(char, str)
     return char.isdigit() or (char in string.ascii_letters) or (char in "_ .-\n")
@@ -71,21 +85,38 @@ def _to_snake_case(text: str) -> str:
     return text
 
 
-def download(url: str, dl_folder: PathType) -> None:
-    """Download stickers from LINE store to `dl_folder`."""
-    dl_folder = Path(dl_folder)
-    Path.mkdir(dl_folder, exist_ok=True)
-
+def get_metadata(url: str) -> Metadata:
     response = requests.get(url)
     if not response.ok:
         raise Exception(f"Request to {url} failed.")
+    soup = BeautifulSoup(response.content, "html.parser")
 
-    pattern = re.compile(
-        r"https:\/\/stickershop.line-scdn.net\/stickershop\/v1\/sticker\/\d+\/android\/sticker.png"
-    )
-    results = sorted(set(pattern.findall(response.text)))
+    if "store.line.me/stickershop/product/" in url:
+        # LINE sticker store.
+        title = soup.find(class_="mdCMN38Item01Ttl").text
+        author = soup.find(class_="mdCMN38Item01Author").text
+        pattern = re.compile(
+            r"https:\/\/stickershop.line-scdn.net\/stickershop\/v1\/sticker"
+            r"\/\d+\/android\/sticker.png"
+        )
+    elif "store.line.me/emojishop/product/" in url:
+        title = soup.find(class_="mdCMN08Ttl").text
+        author = soup.find(class_="mdCMN08Copy").text
+        pattern = re.compile(
+            r"https:\/\/stickershop.line-scdn.net\/sticonshop\/v1\/sticon"
+            r"\/[a-zA-Z\d]+\/iPhone\/\d+.png"
+        )
+    title = title.strip()
+    author = author.strip()
+    image_urls = sorted(set(pattern.findall(response.text)))
+    return Metadata(title, author, image_urls)
 
-    for num, url in enumerate(results):
+
+def download_images(image_urls: Collection[str], dl_folder: PathType) -> None:
+    """Download sticker images using `metadata` info to `dl_folder`."""
+    dl_folder = Path(dl_folder)
+    Path.mkdir(dl_folder, exist_ok=True)
+    for num, url in enumerate(image_urls):
         response = requests.get(url)
         content_type = response.headers["content-type"]
         extension = mimetypes.guess_extension(content_type)
@@ -96,8 +127,14 @@ def download(url: str, dl_folder: PathType) -> None:
 
 def preprocess(
     folder_path: PathType, title: str, author: str, tray_names: Collection[str] = None,
-):
-    """Create dict containing args for `make_pack`, with 30 images maximum per pack."""
+) -> List[PackInfo]:
+    """Create PackInfo containing args for `make_pack`, with 30 images max per pack.
+
+    Given a folder `folder_path`, divides the images into separate packs if there are
+    more than 30 images. If `tray_names` is None, the first sticker in each pack is
+    selected as the tray image. Otherwise, `tray_names` must have as many elements as
+    there are packs (e.g. list of 2 strings if there are 40 images), and the tray image
+    is the image with that name in each pack."""
     folder = Path(folder_path)
     png = [x for x in folder.glob("*.png") if x.stem != "tray"]
     webp = list(folder.glob("*.webp"))
@@ -125,39 +162,37 @@ def preprocess(
         )
 
     return [
-        {"title": t, "author": author, "image_paths": ipp, "tray_path": tp}
+        PackInfo(t, author, ipp, tp)
         for t, ipp, tp in zip(titles, image_pack_paths, tray_paths)
     ]
 
 
-def make_pack(
-    title: str, author: str, image_paths: Collection[PathType], tray_path: str,
-) -> None:
-    """Turns given arguments into a .wastickers file, for Sticker Maker Studio.
+def make_pack(pack_info: PackInfo) -> None:
+    """Make a .wastickers file, for Sticker Maker Studio.
 
     Creates metadata text files using `title` and `author`, converts `image_paths` into
     512px .webp images, and converts `tray_path` to a 96px .png image."""
-    pack_name = _to_snake_case(title)
+    pack_name = _to_snake_case(pack_info.title)
     pack_folder = output / pack_name
     Path.mkdir(pack_folder, exist_ok=True)
 
     # Make 512px stickers.
-    for image_path in image_paths:
+    for image_path in pack_info.image_paths:
         image_path = Path(image_path)
         im = Image.open(image_path)
         im = _square(im, 512)
         im.save(pack_folder / f"{image_path.stem}.webp")
 
     # Make 96px tray image.
-    im = Image.open(tray_path)
+    im = Image.open(pack_info.tray_path)
     im = _square(im, 96)
     im.save(pack_folder / "tray.png")
 
     # Make title and author metadata files.
     with open(pack_folder / "title.txt", "w") as f:
-        f.write(title)
+        f.write(pack_info.title)
     with open(pack_folder / "author.txt", "w") as f:
-        f.write(author)
+        f.write(pack_info.author)
 
     # Make .wastickers file, place in output folder.
     zip_output = shutil.make_archive(pack_name, "zip", pack_folder)
@@ -165,16 +200,28 @@ def make_pack(
     pack_path.rename(pack_path.parent / output / f"{pack_path.stem}.wastickers")
 
 
-def scrape(
-    title: str, author: str, url: str, tray_names: Collection[str] = None
+def download(
+    url: str,
+    *,
+    title: str = None,
+    author: str = None,
+    tray_names: Collection[str] = None,
 ) -> None:
-    """Scrape a given `url` into a .wastickers file with the given metadata."""
+    """Download stickers from a store page into a .wastickers file.
+
+    Setting `title`, `author` and `tray_names` will override the defaults."""
+    metadata = get_metadata(url)
+
+    # Override default title and author if given.
+    title = title if title else metadata.title
+    author = author if author else metadata.author
+
     pack_name = _to_snake_case(title)
-    dest_folder = downloads / pack_name
-    download(url, dest_folder)
-    pack_info = preprocess(dest_folder, title, author, tray_names)
-    for p in pack_info:
-        make_pack(**p)
+    dl_folder = downloads / pack_name
+    download_images(metadata.image_urls, dl_folder)
+    pack_infos = preprocess(dl_folder, title, author, tray_names)
+    for pi in pack_infos:
+        make_pack(pi)
 
 
 def clean() -> None:
