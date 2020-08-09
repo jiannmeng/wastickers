@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "wastickers"
+version = "0.1.0"
+description = "Create and edit .wastickers files"
+authors = ["Tan Jiann Meng <jiannmeng@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+beautifulsoup4 = "^4.9.1"
+pillow = "^7.2.0"
+requests = "^2.24.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
